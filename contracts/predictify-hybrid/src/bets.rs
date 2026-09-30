@@ -65,6 +65,10 @@ pub fn place_bets(
         return Err(Error::EmptyBatch);
     }
 
+    if bets.iter().any(|bet| bet.amount <= 0) {
+        return Err(Error::InvalidBetAmount);
+    }
+
     // ------------------------------------------------------------------
     // Idempotency check
     // ------------------------------------------------------------------
