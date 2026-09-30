@@ -1,1 +1,9 @@
-use soroban_sdk::contracterror;\n\n#[contracterror]\n#[derive(Copy, Clone, Debug, Eq, PartialEq)]\npub enum Error {\n    IdempotentBatchAlreadyApplied = 1,\n    EmptyBatch = 2,\n    InvalidBetAmount = 3,\n}\n
+use soroban_sdk::contracterror;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    IdempotentBatchAlreadyApplied = 1,
+    EmptyBatch = 2,
+    InvalidBetAmount = 3,
+}
