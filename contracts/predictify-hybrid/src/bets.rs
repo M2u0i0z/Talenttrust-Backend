@@ -30,7 +30,7 @@ pub struct Bet {
     /// Amount of the base asset staked, in stroops.
     ///
     /// Must be strictly positive (> 0).  Zero or negative values are
-    /// rejected with [`Error::AmountMustBePositive`].
+    /// rejected with [`Error::InvalidBetAmount`].
     pub amount: i128,
 }
 
@@ -162,7 +162,7 @@ pub fn place_bets(
     for bet in bets.iter() {
         // A non-positive amount is never a valid stake.
         if bet.amount <= 0 {
-            return Err(Error::AmountMustBePositive);
+            return Err(Error::InvalidBetAmount);
         }
 
         // market_id == 0 is the reserved null sentinel; always invalid.
