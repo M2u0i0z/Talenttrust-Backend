@@ -26,9 +26,11 @@ data is per-instance and resets on redeploy.
 | GET | `/openapi.json` | OpenAPI 3 spec |
 | GET | `/api/v1/chain` | On-chain contract deployment info |
 | GET | `/api/v1/stats` | Aggregate statistics |
-| GET/POST | `/api/v1/contracts` | List (`?status=`, `?party=`) / create escrow contracts |
+| GET/POST | `/api/v1/contracts` | List (`?status=`, `?acceptance=`, `?party=`) / create escrow contracts |
 | GET | `/api/v1/contracts/:id` | Get a contract |
-| POST | `/api/v1/contracts/:id/deposit` | `{ "amount": 100 }` |
+| POST | `/api/v1/contracts/:id/accept` | `{ "freelancer": "G...", "termsHash": "..." }` |
+| POST | `/api/v1/contracts/:id/decline` | `{ "freelancer": "G...", "reason": "..." }` (reason ≤ 500 chars) |
+| POST | `/api/v1/contracts/:id/deposit` | `{ "amount": 100 }` (requires acceptance) |
 | POST | `/api/v1/contracts/:id/milestones/:index/release` | Release a milestone |
 | POST | `/api/v1/contracts/:id/dispute` | `{ "raisedBy": "G...", "reason": "..." }` |
 | POST | `/api/v1/contracts/:id/resolve` | `{ "freelancerBps": 5000 }` |
@@ -46,8 +48,26 @@ npm test
 npm run build && npm start
 ```
 
-Configuration (all optional, see `.env.example`): `PORT`, `ESCROW_CONTRACT_ID`, `STELLAR_NETWORK`,
-`STELLAR_RPC_URL`, `FRONTEND_URL`.
+### Acceptance
+
+New contracts start with `acceptance.status: "pending"` and a deterministic `termsHash`
+(SHA-256 of canonical JSON containing the client, freelancer, token and milestone terms).
+The freelancer must call `/accept` with the matching hash before the client can fund escrow;
+`/deposit` returns `409 awaiting_acceptance` until then. The freelancer may instead `/decline`
+(with an optional reason of at most 500 characters), which cancels the contract. The client can
+also cancel while acceptance is pending. Set `REQUIRE_ACCEPTANCE=false` to let new contracts
+start accepted for trusted/back-office flows.
+
+Configuration (all optional, see `.env.example`):
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `3001` | HTTP port when running directly |
+| `ESCROW_CONTRACT_ID` | testnet contract | Soroban escrow contract ID |
+| `STELLAR_NETWORK` | `testnet` | Stellar network name |
+| `STELLAR_RPC_URL` | Soroban testnet RPC | Stellar RPC endpoint |
+| `FRONTEND_URL` | TalentTrust frontend | Website link shown in service info |
+| `REQUIRE_ACCEPTANCE` | `true` | Require freelancer acceptance before funding |
 
 ## Deployment
 

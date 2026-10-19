@@ -50,6 +50,8 @@ export function createApp(store: EscrowStore = new EscrowStore().seed()) {
         'GET  /api/v1/contracts',
         'POST /api/v1/contracts',
         'GET  /api/v1/contracts/:id',
+        'POST /api/v1/contracts/:id/accept',
+        'POST /api/v1/contracts/:id/decline',
         'POST /api/v1/contracts/:id/deposit',
         'POST /api/v1/contracts/:id/milestones/:index/release',
         'POST /api/v1/contracts/:id/dispute',
@@ -93,6 +95,7 @@ export function createApp(store: EscrowStore = new EscrowStore().seed()) {
     wrap((req) => ({
       data: store.list({
         status: typeof req.query.status === 'string' ? req.query.status : undefined,
+        acceptance: typeof req.query.acceptance === 'string' ? req.query.acceptance : undefined,
         party: typeof req.query.party === 'string' ? req.query.party : undefined,
       }),
     })),
@@ -104,6 +107,14 @@ export function createApp(store: EscrowStore = new EscrowStore().seed()) {
     }),
   );
   v1.get('/contracts/:id', wrap((req) => store.get(id(req))));
+  v1.post(
+    '/contracts/:id/accept',
+    wrap((req) => store.accept(id(req), req.body?.freelancer, req.body?.termsHash)),
+  );
+  v1.post(
+    '/contracts/:id/decline',
+    wrap((req) => store.decline(id(req), req.body?.freelancer, req.body?.reason)),
+  );
   v1.post('/contracts/:id/deposit', wrap((req) => store.deposit(id(req), req.body?.amount)));
   v1.post(
     '/contracts/:id/milestones/:index/release',

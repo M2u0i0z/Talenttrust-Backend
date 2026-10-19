@@ -4,6 +4,9 @@
  * for the lifetime of the process (or serverless instance).
  */
 
+import { createHash } from 'crypto';
+import { config } from './config';
+
 export type ContractStatus =
   | 'Created'
   | 'Funded'
@@ -27,6 +30,40 @@ export interface Dispute {
   resolvedAt?: string;
 }
 
+export type AcceptanceStatus = 'pending' | 'accepted' | 'declined';
+
+export interface Acceptance {
+  status: AcceptanceStatus;
+  termsHash: string;
+  respondedAt: string | null;
+  reason?: string;
+}
+
+export interface ContractTerms {
+  client: string;
+  freelancer: string;
+  token: string;
+  milestones: { title: string; amount: number }[];
+}
+
+/**
+ * Deterministic JSON serialization: object keys are sorted recursively while
+ * array order is preserved. Identical terms always produce identical hashes.
+ */
+export function canonicalJSON(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJSON).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJSON(record[key])}`)
+    .join(',')}}`;
+}
+
+export function termsHash(terms: ContractTerms): string {
+  return createHash('sha256').update(canonicalJSON(terms)).digest('hex');
+}
+
 export interface EscrowContract {
   id: number;
   title: string;
@@ -38,6 +75,7 @@ export interface EscrowContract {
   fundedAmount: number;
   releasedAmount: number;
   status: ContractStatus;
+  acceptance: Acceptance;
   reputationIssued: boolean;
   dispute?: Dispute;
   createdAt: string;
@@ -68,11 +106,17 @@ export class EscrowStore {
   private contracts = new Map<number, EscrowContract>();
   private reputation = new Map<string, { completed: number; total: number }>();
   private nextId = 1;
+  private requireAcceptance: boolean;
 
-  list(filter: { status?: string; party?: string } = {}): EscrowContract[] {
+  constructor(options: { requireAcceptance?: boolean } = {}) {
+    this.requireAcceptance = options.requireAcceptance ?? config.requireAcceptance;
+  }
+
+  list(filter: { status?: string; party?: string; acceptance?: string } = {}): EscrowContract[] {
     return [...this.contracts.values()].filter(
       (c) =>
         (!filter.status || c.status === filter.status) &&
+        (!filter.acceptance || c.acceptance.status === filter.acceptance) &&
         (!filter.party || c.client === filter.party || c.freelancer === filter.party),
     );
   }
@@ -117,17 +161,29 @@ export class EscrowStore {
       };
     });
     const now = new Date().toISOString();
+    const token = typeof input.token === 'string' && input.token ? input.token : 'XLM';
+    const hash = termsHash({
+      client,
+      freelancer,
+      token,
+      milestones: milestones.map((m) => ({ title: m.title, amount: m.amount })),
+    });
     const c: EscrowContract = {
       id: this.nextId++,
       title: typeof input.title === 'string' && input.title ? input.title : 'Untitled engagement',
       client,
       freelancer,
-      token: typeof input.token === 'string' && input.token ? input.token : 'XLM',
+      token,
       milestones,
       totalAmount: milestones.reduce((s, m) => s + m.amount, 0),
       fundedAmount: 0,
       releasedAmount: 0,
       status: 'Created',
+      acceptance: {
+        status: this.requireAcceptance ? 'pending' : 'accepted',
+        termsHash: hash,
+        respondedAt: this.requireAcceptance ? null : now,
+      },
       reputationIssued: false,
       createdAt: now,
       updatedAt: now,
@@ -147,9 +203,53 @@ export class EscrowStore {
     return c;
   }
 
+  accept(id: number, freelancerRaw: unknown, termsHashRaw: unknown): EscrowContract {
+    const c = this.get(id);
+    if (typeof freelancerRaw !== 'string' || freelancerRaw !== c.freelancer) {
+      throw new HttpError(403, 'forbidden', 'Only the freelancer can accept this contract');
+    }
+    if (c.status !== 'Created' || c.acceptance.status !== 'pending') {
+      throw new HttpError(409, 'already_responded', `Acceptance is already ${c.acceptance.status}`);
+    }
+    if (typeof termsHashRaw !== 'string' || termsHashRaw !== c.acceptance.termsHash) {
+      throw new HttpError(409, 'terms_mismatch', 'termsHash does not match the contract terms');
+    }
+    c.acceptance.status = 'accepted';
+    c.acceptance.respondedAt = new Date().toISOString();
+    return this.touch(c);
+  }
+
+  decline(id: number, freelancerRaw: unknown, reasonRaw?: unknown): EscrowContract {
+    const c = this.get(id);
+    if (typeof freelancerRaw !== 'string' || freelancerRaw !== c.freelancer) {
+      throw new HttpError(403, 'forbidden', 'Only the freelancer can decline this contract');
+    }
+    if (c.status !== 'Created' || c.acceptance.status !== 'pending') {
+      throw new HttpError(409, 'already_responded', `Acceptance is already ${c.acceptance.status}`);
+    }
+    if (reasonRaw !== undefined && reasonRaw !== null) {
+      if (typeof reasonRaw !== 'string' || reasonRaw.length > 500) {
+        throw new HttpError(400, 'invalid_reason', 'reason must be a string of at most 500 characters');
+      }
+    }
+    c.acceptance.status = 'declined';
+    c.acceptance.respondedAt = new Date().toISOString();
+    if (typeof reasonRaw === 'string' && reasonRaw) c.acceptance.reason = reasonRaw;
+    c.fundedAmount = c.releasedAmount;
+    c.status = 'Cancelled';
+    return this.touch(c);
+  }
+
   deposit(id: number, amountRaw: unknown): EscrowContract {
     const c = this.get(id);
     this.requireActive(c);
+    if (this.requireAcceptance && c.acceptance.status === 'pending') {
+      throw new HttpError(
+        409,
+        'awaiting_acceptance',
+        'Freelancer must accept the contract terms before escrow can be funded',
+      );
+    }
     const amount = Number(amountRaw);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new HttpError(400, 'invalid_amount', 'amount must be positive');
@@ -214,6 +314,11 @@ export class EscrowStore {
   cancel(id: number): EscrowContract {
     const c = this.get(id);
     this.requireActive(c);
+    if (c.acceptance.status === 'pending') {
+      c.acceptance.status = 'declined';
+      c.acceptance.respondedAt = new Date().toISOString();
+      c.acceptance.reason = 'Cancelled by client';
+    }
     c.fundedAmount = c.releasedAmount;
     c.status = 'Cancelled';
     return this.touch(c);
@@ -274,6 +379,7 @@ export class EscrowStore {
         { title: 'Implementation', amount: 750 },
       ],
     });
+    if (a.acceptance.status === 'pending') this.accept(a.id, a.freelancer, a.acceptance.termsHash);
     this.deposit(a.id, 1500);
     this.release(a.id, 0);
     const b = this.create({
@@ -282,6 +388,7 @@ export class EscrowStore {
       freelancer: 'GFREELANCERDEMOBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
       milestones: [{ title: 'Audit report', amount: 2000 }],
     });
+    if (b.acceptance.status === 'pending') this.accept(b.id, b.freelancer, b.acceptance.termsHash);
     this.deposit(b.id, 2000);
     this.release(b.id, 0);
     this.rate(b.id, 5);

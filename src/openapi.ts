@@ -31,6 +31,12 @@ export const openapi = {
         summary: 'List escrow contracts',
         parameters: [
           { name: 'status', in: 'query', schema: { type: 'string' } },
+          {
+            name: 'acceptance',
+            in: 'query',
+            schema: { type: 'string', enum: ['pending', 'accepted', 'declined'] },
+            description: 'Filter by freelancer acceptance status',
+          },
           { name: 'party', in: 'query', schema: { type: 'string' }, description: 'Client or freelancer address' },
         ],
         responses: ok('Contracts', { type: 'object', properties: { data: { type: 'array', items: contractRef } } }),
@@ -61,13 +67,57 @@ export const openapi = {
     '/api/v1/contracts/{id}': {
       get: { tags: ['Contracts'], summary: 'Get a contract', parameters: [idParam], responses: ok('Contract', contractRef) },
     },
+    '/api/v1/contracts/{id}/accept': {
+      post: {
+        tags: ['Contracts'],
+        summary: 'Freelancer accepts the contract terms',
+        parameters: [idParam],
+        requestBody: {
+          required: true,
+          content: json({
+            type: 'object',
+            required: ['freelancer', 'termsHash'],
+            properties: { freelancer: { type: 'string' }, termsHash: { type: 'string' } },
+          }),
+        },
+        responses: {
+          ...ok('Contract accepted', contractRef),
+          403: { description: 'Caller is not the freelancer' },
+          409: { description: 'Terms hash mismatch (terms_mismatch) or already responded (already_responded)' },
+        },
+      },
+    },
+    '/api/v1/contracts/{id}/decline': {
+      post: {
+        tags: ['Contracts'],
+        summary: 'Freelancer declines the contract terms and cancels the contract',
+        parameters: [idParam],
+        requestBody: {
+          required: true,
+          content: json({
+            type: 'object',
+            required: ['freelancer'],
+            properties: { freelancer: { type: 'string' }, reason: { type: 'string', maxLength: 500 } },
+          }),
+        },
+        responses: {
+          ...ok('Contract declined and cancelled', contractRef),
+          400: { description: 'Reason is not a string of at most 500 characters' },
+          403: { description: 'Caller is not the freelancer' },
+          409: { description: 'Acceptance has already been answered' },
+        },
+      },
+    },
     '/api/v1/contracts/{id}/deposit': {
       post: {
         tags: ['Contracts'],
-        summary: 'Deposit funds into escrow',
+        summary: 'Deposit funds into escrow (requires freelancer acceptance)',
         parameters: [idParam],
         requestBody: { content: json({ type: 'object', properties: { amount: { type: 'number' } } }) },
-        responses: ok('Updated contract', contractRef),
+        responses: {
+          ...ok('Updated contract', contractRef),
+          409: { description: 'Contract is not active or is awaiting_acceptance' },
+        },
       },
     },
     '/api/v1/contracts/{id}/milestones/{index}/release': {
@@ -145,6 +195,17 @@ export const openapi = {
           fundedAmount: { type: 'number' },
           releasedAmount: { type: 'number' },
           status: { type: 'string', enum: ['Created', 'Funded', 'Completed', 'Disputed', 'Resolved', 'Cancelled'] },
+          acceptance: { $ref: '#/components/schemas/Acceptance' },
+        },
+      },
+      Acceptance: {
+        type: 'object',
+        required: ['status', 'termsHash', 'respondedAt'],
+        properties: {
+          status: { type: 'string', enum: ['pending', 'accepted', 'declined'] },
+          termsHash: { type: 'string', description: 'SHA-256 of the canonical contract terms' },
+          respondedAt: { type: 'string', format: 'date-time', nullable: true },
+          reason: { type: 'string', maxLength: 500 },
         },
       },
     },

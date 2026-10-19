@@ -26,6 +26,12 @@ describe('TalentTrust API', () => {
       .send({ client: 'GA', freelancer: 'GB', milestones: [{ amount: 100 }, { amount: 50 }] });
     expect(created.status).toBe(201);
     const id = created.body.id;
+    // Deposit is gated on acceptance, so the freelancer must accept the terms first.
+    expect(created.body.acceptance.status).toBe('pending');
+    await request(app)
+      .post(`/api/v1/contracts/${id}/accept`)
+      .send({ freelancer: 'GB', termsHash: created.body.acceptance.termsHash })
+      .expect(200);
     expect((await request(app).post(`/api/v1/contracts/${id}/deposit`).send({ amount: 150 })).body.status).toBe(
       'Funded',
     );
@@ -46,6 +52,10 @@ describe('TalentTrust API', () => {
     const { body } = await request(app)
       .post('/api/v1/contracts')
       .send({ client: 'GC', freelancer: 'GD', milestones: [{ amount: 200 }] });
+    await request(app)
+      .post(`/api/v1/contracts/${body.id}/accept`)
+      .send({ freelancer: 'GD', termsHash: body.acceptance.termsHash })
+      .expect(200);
     await request(app).post(`/api/v1/contracts/${body.id}/deposit`).send({ amount: 200 });
     await request(app).post(`/api/v1/contracts/${body.id}/dispute`).send({ raisedBy: 'GX' }).expect(403);
     await request(app).post(`/api/v1/contracts/${body.id}/dispute`).send({ raisedBy: 'GD', reason: 'late' }).expect(200);
